@@ -18,7 +18,7 @@ final class DiscoverPackageDetailViewModel {
     @ObservationIgnored private let installedRepository: any InstalledPackageStatusReading
     @ObservationIgnored private let brewCommandCenter: any BrewCommandCenter
     @ObservationIgnored private let commandFactory: any BrewMutatingCommandFactory
-    @ObservationIgnored private var mutationTask: Task<Void, Never>?
+    @ObservationIgnored private var installTasks: [HomebrewPackageID: Task<Void, Never>] = [:]
 
     /// Latest phase from the command center stream (see ``observeInstallUpdates()``); drives install chrome.
     private var operationPhase: BrewOperationPhase = .idle
@@ -35,8 +35,7 @@ final class DiscoverPackageDetailViewModel {
 
     /// True while an install is in flight, including the reconcile that lands the badge.
     var isInstalling: Bool {
-        let isPhaseBusy = operationPhasePackageID == discoveryPackage.id && DiscoverInstallBusyPresentation.showsInstallBusy(phase: operationPhase)
-        return isPhaseBusy || activeInstallingPackageID != nil
+        isPackageInstalling(discoveryPackage.id)
     }
 
     init(
@@ -168,14 +167,20 @@ final class DiscoverPackageDetailViewModel {
 
     private var activeComparisonPackageID: DiscoveryBrewPackage.ID?
     private var activeComparisonRequestID: UUID?
-    private(set) var activeInstallingPackageID: HomebrewPackageID?
+    private(set) var activeInstallingPackageIDs: Set<HomebrewPackageID> = []
+
+    var activeInstallingPackageID: HomebrewPackageID? {
+        if activeInstallingPackageIDs.contains(discoveryPackage.id) {
+            return discoveryPackage.id
+        }
+        return activeInstallingPackageIDs.first
+    }
 
     func isPackageInstalling(_ packageID: HomebrewPackageID) -> Bool {
-        if activeInstallingPackageID == packageID {
+        if activeInstallingPackageIDs.contains(packageID) {
             return true
         }
-        let isPhaseBusy = operationPhasePackageID == discoveryPackage.id && DiscoverInstallBusyPresentation.showsInstallBusy(phase: operationPhase)
-        return packageID == discoveryPackage.id && isPhaseBusy
+        return operationPhasePackageID == packageID && DiscoverInstallBusyPresentation.showsInstallBusy(phase: operationPhase)
     }
 
     func update(package: DiscoveryBrewPackage) {
@@ -195,15 +200,18 @@ final class DiscoverPackageDetailViewModel {
     }
 
     func installPackage(_ package: BrewPackage) {
-        guard !isInstalling else { return }
+        let targetID = package.id
+        let targetName = package.name
+        guard !isPackageInstalling(targetID) else { return }
         installErrorMessage = nil
-        activeInstallingPackageID = package.id
+        activeInstallingPackageIDs.insert(targetID)
         let operationID = BrewOperationID(kind: package.kind, name: package.name)
         let command = commandFactory.installCommand(kind: package.kind, name: package.name)
-        mutationTask?.cancel()
-        mutationTask = Task { @MainActor [self] in
+        installTasks[targetID]?.cancel()
+        installTasks[targetID] = Task { @MainActor [self] in
             defer {
-                activeInstallingPackageID = nil
+                activeInstallingPackageIDs.remove(targetID)
+                installTasks[targetID] = nil
             }
             do {
                 try await brewCommandCenter.perform(command, id: operationID)
@@ -212,6 +220,9 @@ final class DiscoverPackageDetailViewModel {
                     break
                 }
             } catch {
+                guard discoveryPackage.id == targetID || alternatives.contains(where: { $0.name == targetName }) else {
+                    return
+                }
                 let latestPhase = await brewCommandCenter.phase(for: operationID)
                 if case let .failed(reason: failure) = latestPhase {
                     installErrorMessage = BrewErrorCopy.message(for: failure)
@@ -223,17 +234,19 @@ final class DiscoverPackageDetailViewModel {
     }
 
     func installSelectedPackage() {
-        guard !isInstalling else {
+        let targetID = discoveryPackage.id
+        guard !isPackageInstalling(targetID) else {
             return
         }
         installErrorMessage = nil
-        activeInstallingPackageID = discoveryPackage.id
+        activeInstallingPackageIDs.insert(targetID)
         let operationID = BrewOperationID(kind: packageKind, name: discoveryPackage.name)
         let command = commandFactory.installCommand(kind: packageKind, name: discoveryPackage.name)
-        mutationTask?.cancel()
-        mutationTask = Task { @MainActor [self] in
+        installTasks[targetID]?.cancel()
+        installTasks[targetID] = Task { @MainActor [self] in
             defer {
-                activeInstallingPackageID = nil
+                activeInstallingPackageIDs.remove(targetID)
+                installTasks[targetID] = nil
             }
             do {
                 try await brewCommandCenter.perform(command, id: operationID)
@@ -242,6 +255,7 @@ final class DiscoverPackageDetailViewModel {
                     break
                 }
             } catch {
+                guard discoveryPackage.id == targetID else { return }
                 let latestPhase = await brewCommandCenter.phase(for: operationID)
                 if case let .failed(reason: failure) = latestPhase {
                     installErrorMessage = BrewErrorCopy.message(for: failure)
@@ -258,7 +272,7 @@ final class DiscoverPackageDetailViewModel {
         let operationID = BrewOperationID(kind: packageKind, name: discoveryPackage.name)
         let stream = await brewCommandCenter.phaseChanges(for: operationID)
         for await phase in stream {
-            guard discoveryPackage.id == observedID else { return }
+            guard !Task.isCancelled, discoveryPackage.id == observedID else { return }
             operationPhase = phase
             operationPhasePackageID = observedID
         }

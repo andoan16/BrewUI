@@ -275,7 +275,7 @@ struct DiscoverPackageDetailViewModelTests {
 
         viewModel.installPackage(altPackage)
         #expect(viewModel.isPackageInstalling(altPackage.id))
-        #expect(viewModel.isInstalling)
+        #expect(!viewModel.isInstalling)
     }
 
     @Test @MainActor func `update package resets alternatives and comparison state`() async {
@@ -329,6 +329,27 @@ struct DiscoverPackageDetailViewModelTests {
 
         continuation.finish()
         await task.value
+    }
+
+    @Test @MainActor func `installing one package does not mark other packages as busy`() {
+        let factory = StubMutatingCommandFactory()
+        let grepPackage = DiscoveryBrewPackage(package: .fixture(name: "grep"), thirtyDayInstallCount: 0)
+        let curlPackage = DiscoveryBrewPackage(package: .fixture(name: "curl"), thirtyDayInstallCount: 0)
+        let viewModel = DiscoverPackageDetailViewModel(
+            package: grepPackage,
+            installedRepository: installedRepo(),
+            brewCommandCenter: NoopBrewCommandCenter.forTesting(),
+            commandFactory: factory,
+        )
+
+        viewModel.installSelectedPackage()
+        #expect(viewModel.isPackageInstalling(grepPackage.id))
+        #expect(viewModel.isInstalling)
+
+        viewModel.update(package: curlPackage)
+        #expect(!viewModel.isPackageInstalling(curlPackage.id))
+        #expect(!viewModel.isInstalling)
+        #expect(viewModel.isPackageInstalling(grepPackage.id))
     }
 }
 

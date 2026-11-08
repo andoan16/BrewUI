@@ -187,9 +187,15 @@ final class InstalledPackageDetailViewModel {
             showUninstallBlockedCallout = false
         }
         if oldDependents != newDependents {
+            let wasActive = isAnalyzingUpgradeImpact || upgradeImpact != nil
             upgradeImpact = nil
             isAnalyzingUpgradeImpact = false
             upgradeAnalysisGeneration += 1
+            if wasActive, showsUpgradeAvailable {
+                Task { [weak self] in
+                    await self?.analyzeUpgradeImpact()
+                }
+            }
         }
     }
 

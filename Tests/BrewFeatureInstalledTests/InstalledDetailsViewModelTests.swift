@@ -669,6 +669,40 @@ extension InstalledDetailsViewModelTests {
         #expect(!viewModel.isAnalyzingUpgradeImpact)
     }
 
+    @Test @MainActor func `refreshDependents retries assessment when dependents change and assessment was active`() async {
+        let package = InstalledBrewPackage.fixture(
+            name: "node",
+            latestVersion: "22.0.0",
+            installedVersions: ["20.0.0"],
+            outdated: true,
+        )
+        let yarn = InstalledBrewPackage.fixture(name: "yarn")
+        let toggle = DependentsToggle()
+        let dependentsRepo = StubInstalledDependentsRepository { _ in
+            toggle.shouldReturnDependents() ? [yarn] : []
+        }
+        let viewModel = makeInstalledDetailsViewModel(
+            package: package,
+            installedDependentsRepository: dependentsRepo,
+            aiEngine: PreviewSupport.aiEngine,
+        )
+
+        await viewModel.analyzeUpgradeImpact()
+        #expect(viewModel.upgradeImpact != nil)
+        #expect(viewModel.upgradeImpact?.affectedDependents.isEmpty == true)
+
+        toggle.enable()
+
+        await viewModel.refreshRelationships()
+
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(viewModel.upgradeImpact != nil)
+        #expect(viewModel.upgradeImpact?.affectedDependents == ["yarn"])
+    }
+
     @Test @MainActor func `analyzeUpgradeImpact ignores stale completion when selection changes back`() async {
         let packageA = InstalledBrewPackage.fixture(
             name: "node",
@@ -778,5 +812,23 @@ private struct SuspendingUpgradeAIEngine: AIEngineProtocol {
 
     func comparePackages(packageA: BrewPackage, packageB: BrewPackage) async -> AIPackageComparison {
         await underlying.comparePackages(packageA: packageA, packageB: packageB)
+    }
+}
+
+// swiftlint:disable:next unchecked_sendable
+private final nonisolated class DependentsToggle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var returnsDependents = false
+
+    func enable() {
+        lock.withLock {
+            returnsDependents = true
+        }
+    }
+
+    func shouldReturnDependents() -> Bool {
+        lock.withLock {
+            returnsDependents
+        }
     }
 }

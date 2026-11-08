@@ -343,10 +343,16 @@ extension DoctorViewModel {
         fixErrorMessages[command]
     }
 
+    private func parseAndNormaliseCommand(_ command: String) -> [String] {
+        let rawParts = command.split(separator: " ").map(String.init)
+        return rawParts.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`")) }
+    }
+
     private func isSafeAICommand(_ parts: [String], raw: String, for item: DoctorIssueItem?) -> Bool {
         guard parts.first == "brew" else { return false }
         guard !raw.contains(";"), !raw.contains("&&"), !raw.contains("|"),
-              !raw.contains(">"), !raw.contains("<"), !raw.contains("sudo")
+              !raw.contains(">"), !raw.contains("<"), !raw.contains("sudo"),
+              !raw.contains("$")
         else { return false }
 
         let sub = parts.count > 1 ? parts[1] : ""
@@ -359,8 +365,13 @@ extension DoctorViewModel {
 
         if sub == "link" {
             let formulaTargets = parts.dropFirst(2).filter { !$0.hasPrefix("-") }
+            let allowedFormulaChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "+._@-"))
             guard !formulaTargets.isEmpty,
-                  formulaTargets.allSatisfy({ !$0.contains("/") && !$0.contains("\\") && !$0.contains("..") })
+                  formulaTargets.allSatisfy({ target in
+                      !target.contains("/") && !target.contains("\\") && !target.contains("..")
+                          && !target.hasPrefix("$")
+                          && target.unicodeScalars.allSatisfy { allowedFormulaChars.contains($0) }
+                  })
             else { return false }
         }
 
@@ -374,15 +385,15 @@ extension DoctorViewModel {
     }
 
     func isAICommandExecutable(_ command: String, for item: DoctorIssueItem? = nil) -> Bool {
-        let parts = command.split(separator: " ").map(String.init)
-        return isSafeAICommand(parts, raw: command, for: item)
+        let normalised = parseAndNormaliseCommand(command)
+        return isSafeAICommand(normalised, raw: command, for: item)
     }
 
     func runAICommand(_ command: String, for item: DoctorIssueItem? = nil) {
-        let parts = command.split(separator: " ").map(String.init)
-        guard isSafeAICommand(parts, raw: command, for: item) else { return }
+        let normalised = parseAndNormaliseCommand(command)
+        guard isSafeAICommand(normalised, raw: command, for: item) else { return }
 
-        let args = Array(parts.dropFirst()).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) }
+        let args = Array(normalised.dropFirst())
         guard !args.isEmpty else { return }
 
         let token = command
